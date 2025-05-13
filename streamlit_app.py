@@ -88,20 +88,20 @@ html_code = """
     max-query-length="-1">
     <df-messenger-chat chat-title="מכון קשרים - ד״ר רוני"></df-messenger-chat>
   </df-messenger>
-    <script>
-        const dfMessenger = document.querySelector('df-messenger');
-
-        function addRichContent(customPayload) {
-            // Render the returned richContent array as a custom card
-            dfMessenger.renderCustomCard(customPayload.richContent);
-            return Promise.resolve({ status: "OK", reason: null });
-        }
-
-        // Replace with your full tool resource name:
-        const toolId = 'projects/ksharim/locations/us/agents/574c260b-5642-4931-8654-959f62d913b2/tools/7bbf0864-0e65-43e1-95a3-5b7a5e445e60';
-        dfMessenger.registerClientSideFunction(toolId, addRichContent.name, addRichContent);
-    </script>
 </body>
+<script>
+    const dfMessenger = document.querySelector('df-messenger');
+
+    function addRichContent(customPayload) {
+        // Render the returned richContent array as a custom card
+        dfMessenger.renderCustomCard(customPayload.richContent);
+        return Promise.resolve({ status: "OK", reason: null });
+    }
+
+    // Replace with your full tool resource name:
+    const toolId = 'projects/ksharim/locations/us/agents/574c260b-5642-4931-8654-959f62d913b2/tools/7bbf0864-0e65-43e1-95a3-5b7a5e445e60';
+    dfMessenger.registerClientSideFunction(toolId, addRichContent.name, addRichContent);
+</script>
 </html>
 """
 
