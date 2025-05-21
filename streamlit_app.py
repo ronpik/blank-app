@@ -1,133 +1,87 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import os
+from globalog import LOG # Import globalog
 
-st.subheader("Ksharim Chatbot")
+# --- Configuration for Streamlit App & Widget ---
+LOG.info("Streamlit App: Initializing configuration for standalone frontend...")
 
-html_code = """
-<!DOCTYPE html>
-<html dir="rtl" lang="he">
-<head>
-  <meta charset="UTF-8" />
-  <title>מכון קשרים – ד״ר רוני</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+# URL of the EXTERNALLY RUNNING FastAPI backend.
+# This MUST be accessible from the user's browser.
+# Example: "http://your-deployed-fastapi-domain.com" or "http://localhost:8000" if FastAPI is running locally.
+FASTAPI_BACKEND_PUBLIC_URL = st.secrets.get(
+    "FASTAPI_BACKEND_PUBLIC_URL", 
+    os.environ.get("FASTAPI_BACKEND_PUBLIC_URL", "http://localhost:8000") # Default for local testing
+)
+LOG.info(f"Streamlit App: FastAPI backend public URL: {FASTAPI_BACKEND_PUBLIC_URL}")
 
-  <!-- Dialogflow Messenger CSS & JS -->
-  <link
-    rel="stylesheet"
-    href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css"
-  />
-  <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
+# API base path on the FastAPI server (e.g., "/api")
+API_BASE_PATH_ON_FASTAPI = st.secrets.get(
+    "API_BASE_PATH", 
+    os.environ.get("API_BASE_PATH", "/api") # Default API base path
+)
+LOG.info(f"Streamlit App: API base path on FastAPI server: {API_BASE_PATH_ON_FASTAPI}")
 
-  <style>
-    /* ─── Page Background ────────────────────────────────────────── */
-    html, body {
-      height: 100%;
-      margin: 0;
-      background: linear-gradient(
-        135deg,
-        #2c3e50 0%,
-        #8e44ad 60%,
-        #ecf0f1 100%
-      );
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      color: #2c3e50;
-      direction: rtl;
-    }
+# Construct URLs for widget resources, assuming FastAPI serves them
+# The FastAPI server (running elsewhere) must be configured to serve these paths.
+WIDGET_SCRIPT_URL = f"{FASTAPI_BACKEND_PUBLIC_URL}/widget/therapist-chat-widget.min.js"
+WIDGET_API_BASE_FOR_JS = f"{FASTAPI_BACKEND_PUBLIC_URL}{API_BASE_PATH_ON_FASTAPI}"
+THERAPIST_AVATAR_URL = f"{FASTAPI_BACKEND_PUBLIC_URL}/widget/assets/therapist.svg"
+USER_AVATAR_URL = f"{FASTAPI_BACKEND_PUBLIC_URL}/widget/assets/user.svg"
 
-    /* ─── Header ─────────────────────────────────────────────────── */
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      background: rgba(255,255,255,0.85);
-      padding: 12px 24px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    header img {
-      height: 50px;
-      margin-left: 16px;
-    }
-    .titles {
-      text-align: right;
-    }
-    .titles h1 {
-      margin: 0;
-      font-size: 1.6rem;
-      color: #8e44ad;
-    }
-    .titles h2 {
-      margin: 0;
-      font-size: 1.2rem;
-      color: #2c3e50;
-    }
+# --- Streamlit App Layout ---
+st.set_page_config(page_title="Therapist Chat Demo", layout="wide")
 
-    /* ─── Chat Popup ─────────────────────────────────────────────── */
-    df-messenger {
-      position: fixed;
-      bottom: 24px;
-      left: 24px;
-      width: 360px;
-      height: calc(100% - 48px);
-      border-radius: 14px;
-      overflow: hidden;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-      --df-messenger-font-color: #2c3e50;
-      --df-messenger-font-family: 'Segoe UI', sans-serif;
-      --df-messenger-chat-background: #ffffff;
-      --df-messenger-message-user-background: #ecf0f1;
-      --df-messenger-message-bot-background: #ffffff;
-      --df-messenger-send-icon-color: #8e44ad;
-    }
-    /* Ensure multi-line cards wrap */
-    df-messenger-chat-bubble::part(text) {
-      white-space: pre-wrap;
-    }
-  </style>
-</head>
-<body>
-  <!-- Branded Header -->
-  <header>
-    <img
-      src="https://kshareem.co.il/wp-content/uploads/2022/04/icon_ksharim.jpg"
-      alt="לוגו מכון קשרים"
-    />
-    <div class="titles">
-      <h1>מכון קשרים</h1>
-      <h2>ד״ר רוני</h2>
-    </div>
-  </header>
+st.title("AI Relationship Coach Chat")
+st.markdown("""
+This is a demonstration of an AI-powered relationship coach. 
+Click the chat icon in the bottom right to start a conversation.
 
-  <!-- The popup chatbot -->
-  <df-messenger
-    location="us-central1"
-    project-id="ksharim"
-    agent-id="85623c36-efc7-4b3b-a13e-7ee68aa74739"
-    language-code="he-il"
-    chat-title="מכון קשרים – ד״ר רוני"
-    max-query-length="-1">
-  </df-messenger>
+The chat widget will connect to an external backend service.
+""")
 
-  <!-- Rich-content handler for your playbook tool -->
-  <script>
-    function addRichContent(payload) {
-      document
-        .querySelector('df-messenger')
-        .renderCustomCard(payload.richContent);
-      return Promise.resolve({ status: 'OK' });
-    }
-    window.addEventListener('df-messenger-loaded', () => {
-      const dfMessenger = document.querySelector('df-messenger');
-      const toolId = 
-        'projects/ksharim/locations/us/agents/85623c36-efc7-4b3b-a13e-7ee68aa74739/tools/98561e78-75d3-4925-af61-e792da7fef46';
-      dfMessenger.registerClientSideFunction(
-        toolId,
-        'addRichContent',
-        addRichContent
-      );
-    });
-  </script>
-</body>
-</html>
+st.sidebar.header("About")
+st.sidebar.info(
+    "This Streamlit app provides a frontend for the AI Relationship Coach. "
+    "The chat widget connects to a separate FastAPI backend service for AI interactions."
+)
+st.sidebar.markdown("--- ")
+st.sidebar.subheader("Widget Connection Configuration:")
+st.sidebar.json({
+    "FASTAPI_BACKEND_PUBLIC_URL": FASTAPI_BACKEND_PUBLIC_URL,
+    "widget_script_src": WIDGET_SCRIPT_URL,
+    "widget_api_base (for JS)": WIDGET_API_BASE_FOR_JS,
+    "therapist_avatar_src": THERAPIST_AVATAR_URL,
+    "user_avatar_src": USER_AVATAR_URL
+})
+
+# --- Embed the Chat Widget ---
+# The widget script and its assets (JS, CSS, images) are served by the external FastAPI backend.
+html_to_embed = f"""
+    <script>
+      // This configuration is passed to the widget when it initializes.
+      // It tells the widget where to find its backend API and assets.
+      window.TherapistChatConfig = {{
+        apiBase: '{WIDGET_API_BASE_FOR_JS}',          // Tells widget where to send POST /chat requests
+        therapistAvatar: '{THERAPIST_AVATAR_URL}', // URL for therapist avatar image
+        userAvatar: '{USER_AVATAR_URL}',          // URL for user avatar image
+        title: 'AI Relationship Coach',
+        placeholder: 'Ask about relationships...',
+        initialState: 'collapsed',
+        language: 'en', // Default language; can be 'he' for Hebrew/RTL
+        // forceRTL: true, // Uncomment to force RTL regardless of language
+        // primaryColor: '#yourColor', // Optional: Override default theme colors
+        // secondaryColor: '#yourOtherColor'
+      }};
+    </script>
+    <script 
+        id="therapist-chat-script"
+        src="{WIDGET_SCRIPT_URL}" // This script itself is served by the external FastAPI
+    ></script>
 """
 
-components.html(html_code, height=650, scrolling=True)
+components.html(html_to_embed, height=0, scrolling=False) # Height 0 as widget is fixed position
+
+st.markdown("--- ")
+st.markdown("### Disclaimer")
+st.markdown("This is a demo application. Information provided should not be considered professional advice.") 
