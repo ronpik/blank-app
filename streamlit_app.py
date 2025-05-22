@@ -17,7 +17,6 @@ st.set_page_config(
 )
 
 # Environment variables
-LOG.info(st.secrets.keys())
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 ASSISTANT_ID = os.environ.get("ASSISTANT_ID", st.secrets.get("ASSISTANT_ID", ""))
 VECTOR_STORE_ID = os.environ.get("VECTOR_STORE_ID", st.secrets.get("VECTOR_STORE_ID", ""))
@@ -28,7 +27,7 @@ MAX_POLL_ATTEMPTS = int(os.environ.get("MAX_POLL_ATTEMPTS", st.secrets.get("MAX_
 # Paths
 CONTENT_DIR = Path(__file__).parent 
 ASSETS_FOLDER = CONTENT_DIR / "streamlit_app" / "static" / "widget" / "assets"
-THERAPIST_AVATAR_PATH = ASSETS_FOLDER / "therapist.svg"
+THERAPIST_AVATAR_PATH = ASSETS_FOLDER / "icon_ksharim.jpg"
 THERAPIST_AVATAR_URL = "https://cdn.jsdelivr.net/gh/rony-ai/rony-assets@main/assets/therapist.svg"
 USER_AVATAR_PATH = ASSETS_FOLDER / "user.svg"
 
@@ -406,7 +405,7 @@ async def ensure_thread():
 
 # Display existing chat messages
 for message in st.session_state.messages:
-    with st.chat_message(message["role"], avatar=THERAPIST_AVATAR_URL if message["role"] == "assistant" else None):
+    with st.chat_message(message["role"], avatar=THERAPIST_AVATAR_PATH if message["role"] == "assistant" else None):
         st.markdown(message["content"])
 
 # Process new messages
@@ -433,7 +432,7 @@ async def process_message(user_input):
         st.session_state.messages.append({"role": "assistant", "content": response})
         
         # Display the assistant's response in UI
-        with st.chat_message("assistant", avatar=THERAPIST_AVATAR_URL):
+        with st.chat_message("assistant", avatar=THERAPIST_AVATAR_PATH):
             st.markdown(response)
         
         if usage:
