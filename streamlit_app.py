@@ -17,6 +17,7 @@ st.set_page_config(
 )
 
 # Environment variables
+LOG.info(st.secrets.keys())
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
 ASSISTANT_ID = os.environ.get("ASSISTANT_ID", st.secrets.get("ASSISTANT_ID", ""))
 VECTOR_STORE_ID = os.environ.get("VECTOR_STORE_ID", st.secrets.get("VECTOR_STORE_ID", ""))
@@ -362,6 +363,7 @@ async def initialize_client():
         LOG.info("Client already initialized")
         return True
     
+    LOG.info(st.secrets.keys())
     if not OPENAI_API_KEY:
         st.error("OpenAI API Key is missing. Please set it in your environment variables or Streamlit secrets.")
         return False
