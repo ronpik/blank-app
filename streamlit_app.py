@@ -1,700 +1,453 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import os
-import base64
-from globalog import LOG # Import globalog
-import shutil
+from pathlib import Path
+import asyncio
+from openai import AsyncOpenAI
+from typing import Dict, List, Optional, Any, Tuple, Union
+from globalog import LOG
+import uuid
+import time
 
-# --- Configuration for Streamlit App & Widget ---
-LOG.info("Streamlit App: Initializing configuration...")
-
-# Directory structure for assets - fixed paths
-STREAMLIT_APP_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(STREAMLIT_APP_DIR, "streamlit_app", "static")
-WIDGET_DIR = os.path.join(STATIC_DIR, "widget")
-ASSETS_DIR = os.path.join(WIDGET_DIR, "assets")
-
-# URL of the EXTERNALLY RUNNING FastAPI backend for API calls only.
-# This MUST be accessible from the user's browser.
-FASTAPI_BACKEND_PUBLIC_URL = st.secrets.get(
-    "FASTAPI_BACKEND_PUBLIC_URL", 
-    os.environ.get("FASTAPI_BACKEND_PUBLIC_URL", "http://localhost:8000") # Default for local testing
+# Configuration and settings
+st.set_page_config(
+    page_title="ד״ר רוני - AI Relationship Coach",
+    page_icon="💬",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-LOG.info(f"Streamlit App: FastAPI backend public URL: {FASTAPI_BACKEND_PUBLIC_URL}")
 
-# API base path on the FastAPI server (e.g., "/api")
-API_BASE_PATH_ON_FASTAPI = st.secrets.get(
-    "API_BASE_PATH", 
-    os.environ.get("API_BASE_PATH", "/api") # Default API base path
-)
-LOG.info(f"Streamlit App: API base path on FastAPI server: {API_BASE_PATH_ON_FASTAPI}")
+# Environment variables
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", st.secrets.get("OPENAI_API_KEY", ""))
+ASSISTANT_ID = os.environ.get("ASSISTANT_ID", st.secrets.get("ASSISTANT_ID", ""))
+VECTOR_STORE_ID = os.environ.get("VECTOR_STORE_ID", st.secrets.get("VECTOR_STORE_ID", ""))
+MAX_RETRIES = int(os.environ.get("MAX_RETRIES", st.secrets.get("MAX_RETRIES", 3)))
+POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", st.secrets.get("POLL_INTERVAL", 1)))
+MAX_POLL_ATTEMPTS = int(os.environ.get("MAX_POLL_ATTEMPTS", st.secrets.get("MAX_POLL_ATTEMPTS", 30)))
 
-# Local static file paths - these will be served by Streamlit
-WIDGET_SCRIPT_PATH = os.path.join(ASSETS_DIR, "therapist-chat-widget.min.js")
-THERAPIST_AVATAR_PATH = os.path.join(ASSETS_DIR, "therapist.svg")
-USER_AVATAR_PATH = os.path.join(ASSETS_DIR, "user.svg")
+# Paths
+CONTENT_DIR = Path(__file__).parent 
+ASSETS_FOLDER = CONTENT_DIR / "streamlit_app" / "static" / "widget" / "assets"
+THERAPIST_AVATAR_PATH = ASSETS_FOLDER / "therapist.svg"
+THERAPIST_AVATAR_URL = "https://cdn.jsdelivr.net/gh/rony-ai/rony-assets@main/assets/therapist.svg"
+USER_AVATAR_PATH = ASSETS_FOLDER / "user.svg"
 
-# Full API URL for the widget config
-API_FULL_URL = f"{FASTAPI_BACKEND_PUBLIC_URL}{API_BASE_PATH_ON_FASTAPI}"
-
-# Asset paths for the frontend - need to be relative
-THERAPIST_AVATAR_RELATIVE = "streamlit_app/static/widget/assets/therapist.svg"
-USER_AVATAR_RELATIVE = "streamlit_app/static/widget/assets/user.svg"
-
-# Function to read and encode files as base64
-def get_file_content_as_base64(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, "rb") as f:
-            data = f.read()
-            return base64.b64encode(data).decode()
-    return None
-
-# Function to get file content as string
-def get_file_content_as_string(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
-            return f.read()
-    return None
-
-# --- Streamlit App Layout ---
-st.set_page_config(page_title="Therapist Chat Demo", layout="wide")
-
-st.title("AI Relationship Coach Chat")
+# Custom CSS for RTL and styling
 st.markdown("""
-This is a demonstration of an AI-powered relationship coach. 
-Click the chat icon in the bottom right to start a conversation.
-
-The chat widget will connect to the FastAPI backend for AI processing.
-""")
-
-# Display info about static files in sidebar for debugging
-st.sidebar.header("About")
-st.sidebar.info(
-    "This Streamlit app provides a frontend for the AI Relationship Coach. "
-    "The chat widget connects to the FastAPI backend service for AI interactions."
-)
-st.sidebar.markdown("--- ")
-st.sidebar.subheader("App Configuration:")
-
-# Check if all required files exist
-widget_script_exists = os.path.isfile(WIDGET_SCRIPT_PATH)
-therapist_avatar_exists = os.path.isfile(THERAPIST_AVATAR_PATH)
-user_avatar_exists = os.path.isfile(USER_AVATAR_PATH)
-
-status = {
-    "FASTAPI_BACKEND_PUBLIC_URL": FASTAPI_BACKEND_PUBLIC_URL,
-    "API_BASE_PATH": API_BASE_PATH_ON_FASTAPI,
-    "widget_script_file": f"{WIDGET_SCRIPT_PATH} (Exists: {widget_script_exists})",
-    "therapist_avatar_file": f"{THERAPIST_AVATAR_PATH} (Exists: {therapist_avatar_exists})",
-    "user_avatar_file": f"{USER_AVATAR_PATH} (Exists: {user_avatar_exists})"
-}
-st.sidebar.json(status)
-
-# If files don't exist, show instructions with updated paths
-if not widget_script_exists:
-    st.warning("**Widget script not found!**\n\n"
-               f"Looking for file at: {WIDGET_SCRIPT_PATH}\n\n"
-               "Please make sure the widget JavaScript file is in the correct location.")
-
-if not (therapist_avatar_exists and user_avatar_exists):
-    st.warning("""
-    **Missing avatar files!** Please verify:
+<style>
+    /* Global RTL direction for the entire app */
+    body {
+        direction: rtl !important;
+    }
+    .main .block-container {
+        max-width: 1000px;
+        padding: 2rem;
+        direction: rtl !important;
+    }
     
-    1. Therapist avatar at: streamlit_app/static/widget/assets/therapist.svg
-    2. User avatar at: streamlit_app/static/widget/assets/user.svg
-    """)
-
-# --- Embed the Chat Widget ---
-if widget_script_exists:
-    # Read and encode the SVG files to data URLs if they exist
-    therapist_avatar_data = None
-    user_avatar_data = None
+    /* Styling for the title */
+    .title {
+        text-align: center;
+        color: #9C3EE8;
+        font-size: 2em;
+        margin-bottom: 20px;
+        font-weight: bold;
+    }
     
-    if therapist_avatar_exists:
-        therapist_avatar_data = get_file_content_as_base64(THERAPIST_AVATAR_PATH)
+    /* Chat styling */
+    .stChatFloatingInputContainer {
+        bottom: 20px !important;
+        background-color: rgba(255, 255, 255, 0.9) !important;
+        padding: 10px !important;
+        border-radius: 10px !important;
+        border: 1px solid #eaeaea !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+    }
     
-    if user_avatar_exists:
-        user_avatar_data = get_file_content_as_base64(USER_AVATAR_PATH)
+    /* Override chat message avatars and styling */
+    .stChatMessage .avatar {
+        width: 40px !important;
+        height: 40px !important;
+        border-radius: 50% !important;
+        margin: 0 10px !important;
+        padding: 2px !important;
+        background-color: white !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+    }
     
-    # Construct avatar URLs - either as data URLs or placeholder
-    therapist_avatar_url = f"data:image/svg+xml;base64,{therapist_avatar_data}" if therapist_avatar_data else "https://via.placeholder.com/40"
-    user_avatar_url = f"data:image/svg+xml;base64,{user_avatar_data}" if user_avatar_data else "https://via.placeholder.com/40"
+    /* User chat bubble */
+    .stChatMessage[data-testid="stChatMessage-user"] .content p {
+        background-color: #E8E8E8 !important;
+        border: 1px solid #D3D3D3 !important;
+        color: #333 !important;
+        border-radius: 18px !important;
+        border-top-left-radius: 5px !important;
+        padding: 12px 18px !important;
+        text-align: right !important;
+    }
     
-    # Get the widget script content
-    widget_script = get_file_content_as_string(WIDGET_SCRIPT_PATH)
+    /* Assistant chat bubble */
+    .stChatMessage[data-testid="stChatMessage-assistant"] .content p {
+        background-color: #FFFFFF !important;
+        border: 1px solid rgba(156, 62, 232, 0.3) !important;
+        color: #333 !important;
+        border-radius: 18px !important;
+        border-top-right-radius: 5px !important;
+        padding: 12px 18px !important;
+        text-align: right !important;
+    }
     
-    # Debug script length
-    script_length = len(widget_script) if widget_script else 0
-    st.sidebar.info(f"Widget script loaded: {script_length} characters")
+    /* Chat input styling */
+    .stChatInputContainer {
+        direction: rtl !important;
+        padding: 10px !important;
+        border-radius: 12px !important;
+        border: 1px solid #eaeaea !important;
+    }
     
-    # Create the HTML content - following the structure from example.html
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Therapist Chat Widget Example</title>
-  <style>
-    body {{
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-      line-height: 1.6;
-      margin: 0;
-      padding: 20px;
-      color: #333;
-      max-width: 800px;
-      margin: 0 auto;
-    }}
-    h1 {{
-      margin-top: 40px;
-      border-bottom: 1px solid #eee;
-      padding-bottom: 10px;
-    }}
-    p {{
-      margin-bottom: 20px;
-    }}
-    .example-section {{
-      margin: 40px 0;
-      padding: 20px;
-      background-color: #f9f9f9;
-      border-radius: 8px;
-      border: 1px solid #eee;
-    }}
-    .example-button {{
-      display: inline-block;
-      padding: 10px 15px;
-      background-color: #6B4BB5;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      margin-right: 10px;
-      margin-bottom: 10px;
-      font-size: 14px;
-    }}
-    .example-button:hover {{
-      background-color: #5a3fa0;
-    }}
-    .code-block {{
-      background-color: #f5f5f5;
-      padding: 15px;
-      border-radius: 4px;
-      overflow-x: auto;
-      font-family: monospace;
-      margin: 20px 0;
-    }}
-    #debugPanel {{
-      background-color: #f8f8f8;
-      border: 1px solid #ddd;
-      padding: 10px;
-      margin-top: 20px;
-      font-family: monospace;
-      max-height: 200px;
-      overflow-y: auto;
-    }}
-    .api-config {{
-      margin-top: 20px;
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-    }}
-    .api-config input {{
-      padding: 8px;
-      width: 300px;
-      margin-right: 10px;
-    }}
-    .api-config button {{
-      padding: 8px 12px;
-      background-color: #6B4BB5;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }}
-    .language-config example-section {{
-      margin-top: 20px;
-      padding: 20px;
-      background-color: #f9f9f9;
-      border-radius: 8px;
-      border: 1px solid #eee;
-    }}
-    .language-config label {{
-      display: block;
-      margin-bottom: 10px;
-    }}
-    .language-config select {{
-      padding: 8px;
-      width: 300px;
-      margin-right: 10px;
-    }}
-    .language-config input[type="checkbox"] {{
-      margin-right: 10px;
-    }}
-    .language-config button {{
-      padding: 8px 12px;
-      background-color: #6B4BB5;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-    }}
-  </style>
-  <script>
-    // Debug script to monitor resource loading
-    document.addEventListener('DOMContentLoaded', function() {{
-      console.log('DOM Content Loaded');
-      
-      // Create debug panel
-      const debugPanel = document.createElement('div');
-      debugPanel.id = 'debugPanel';
-      debugPanel.innerHTML = '<h3>Debug Log:</h3>';
-      document.body.appendChild(debugPanel);
-      
-      function logMessage(msg) {{
-        console.log(msg);
-        const entry = document.createElement('div');
-        entry.textContent = msg;
-        debugPanel.appendChild(entry);
-        debugPanel.scrollTop = debugPanel.scrollHeight;
-      }}
-      
-      // Monitor all script loads
-      const originalCreateElement = document.createElement;
-      document.createElement = function(tagName) {{
-        const element = originalCreateElement.call(document, tagName);
-        if (tagName.toLowerCase() === 'script') {{
-          logMessage('Script element created');
-          const originalSetAttribute = element.setAttribute;
-          element.setAttribute = function(name, value) {{
-            if (name === 'src') {{
-              logMessage(`Script src attribute set to: ${{value}}`);
-            }}
-            return originalSetAttribute.call(this, name, value);
-          }}
-          // Monitor script errors
-          element.addEventListener('error', function(e) {{
-            logMessage(`ERROR loading script: ${{e.target.src}}`);
-          }});
-          element.addEventListener('load', function(e) {{
-            logMessage(`SUCCESS loading script: ${{e.target.src}}`);
-          }});
-        }}
-        return element;
-      }};
-      
-      // Monitor fetch requests
-      const originalFetch = window.fetch;
-      window.fetch = function(input, init) {{
-        logMessage(`Fetch request to: ${{input}}`);
-        return originalFetch.apply(this, arguments)
-          .then(response => {{
-            logMessage(`Fetch response ${{response.status}} from: ${{input}}`);
-            return response;
-          }})
-          .catch(error => {{
-            logMessage(`Fetch ERROR from: ${{input}} - ${{error.message}}`);
-            throw error;
-          }});
-      }};
-      
-      // Monitor XMLHttpRequest
-      const originalXhrOpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function(method, url) {{
-        this.addEventListener('load', function() {{
-          logMessage(`XHR ${{method}} response ${{this.status}} from: ${{url}}`);
-        }});
-        this.addEventListener('error', function() {{
-          logMessage(`XHR ${{method}} ERROR from: ${{url}}`);
-        }});
-        logMessage(`XHR ${{method}} request to: ${{url}}`);
-        return originalXhrOpen.apply(this, arguments);
-      }};
-
-      // Check for broken scripts on window errors
-      window.addEventListener('error', function(e) {{
-        if (e.filename) {{
-          logMessage(`ERROR in script: ${{e.filename}} - ${{e.message}}`);
-        }}
-      }});
-    }});
-  </script>
-
-  <!-- Initialize the widget configuration before loading the script -->
-  <script>
-    window.TherapistChatConfig = {{
-      apiBase: '{API_FULL_URL}',  // Ensure this includes /api
-      primaryColor: '#6B4BB5',
-      secondaryColor: '#FFFFFF',
-      position: 'bottom-right',
-      initialState: 'collapsed',
-      placeholder: 'שאל שאלה את ד״ר רוני...',
-      therapistAvatar: '{THERAPIST_AVATAR_RELATIVE}',
-      userAvatar: '{USER_AVATAR_RELATIVE}',
-      title: 'Therapist Chat',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-      enableMarkdown: true,
-      language: 'he', // Default to English
-      forceRTL: false // Default to LTR unless language is 'he'
-    }};
-  </script>
-</head>
-<body>
-  <h1>Therapist Chat Widget Demo</h1>
-  <p>This page demonstrates the therapist chat widget with markdown formatting support.</p>
-
-  <div class="api-config">
-    <h3>API Backend Configuration</h3>
-    <p>Enter the URL of your FastAPI backend server (including the /api base path):</p>
-    <input type="text" id="apiBaseInput" value="{API_FULL_URL}" placeholder="e.g., http://localhost:8000/api">
-    <button onclick="updateApiBase()">Update API URL</button>
-    <button onclick="testApiConnection()">Test Connection</button>
-    <div id="apiStatus" style="margin-top: 10px; padding: 5px;"></div>
-  </div>
-
-  <div class="language-config example-section">
-    <h3>Language & RTL Configuration</h3>
-    <label for="languageSelect">Select Language:</label>
-    <select id="languageSelect">
-      <option value="en">English (LTR)</option>
-      <option value="he" selected>Hebrew (RTL)</option>
-    </select>
-    <label for="forceRTLCheckbox" style="margin-left: 15px;">Force RTL:</label>
-    <input type="checkbox" id="forceRTLCheckbox">
-    <button onclick="updateLanguageSettings()" style="margin-left: 10px;">Apply Language</button>
-  </div>
-
-  <div class="example-section">
-    <h2>Try Markdown Examples</h2>
-    <p>Click on these buttons to see how different markdown formatting renders in the chat:</p>
+    /* RTL for inputs */
+    input[type="text"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
     
-    <button class="example-button" onclick="simulateResponse('text-formatting')">Text Formatting</button>
-    <button class="example-button" onclick="simulateResponse('lists')">Lists</button>
-    <button class="example-button" onclick="simulateResponse('headings')">Headings</button>
-    <button class="example-button" onclick="simulateResponse('blockquotes')">Blockquotes</button>
-    <button class="example-button" onclick="simulateResponse('code')">Code Examples</button>
-    <button class="example-button" onclick="simulateResponse('links')">Links</button>
-    <button class="example-button" onclick="simulateResponse('combined')">Combined Example</button>
-  </div>
+    /* Make chat container taller */
+    .stChatContainer {
+        height: 70vh !important;
+        overflow-y: auto !important;
+        margin-bottom: 20px !important;
+    }
+    
+    /* Style sidebar */
+    .css-1d391kg {
+        direction: rtl !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-  <div class="example-section">
-    <h2>Widget Configuration</h2>
-    <p>The widget is configured with the following options:</p>
-    <div class="code-block">
-      <pre id="configDisplay">
-{{
-  apiBase: '{API_FULL_URL}',
-  primaryColor: '#6B4BB5',
-  secondaryColor: '#FFFFFF',
-  position: 'bottom-right',
-  initialState: 'collapsed',
-  placeholder: 'שאל שאלה את ד״ר רוני...',
-  therapistAvatar: '{THERAPIST_AVATAR_RELATIVE}',
-  userAvatar: '{USER_AVATAR_RELATIVE}',
-  title: 'Therapist Chat',
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-  enableMarkdown: true,
-  language: 'he',
-  forceRTL: false
-}}</pre>
-    </div>
-  </div>
+# Initialize session state
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-  <script>{widget_script}</script>
-  <script>
-    // Function to update the API base URL
-    function updateApiBase() {{
-      const newApiBase = document.getElementById('apiBaseInput').value.trim();
-      if (newApiBase) {{
-        // Update the config
-        window.TherapistChatConfig.apiBase = newApiBase;
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
+
+if "client" not in st.session_state:
+    st.session_state.client = None
+    st.session_state.client_initialized = False
+
+if "processing_message" not in st.session_state:
+    st.session_state.processing_message = False
+
+# OpenAI Assistants API Service
+class OpenAIService:
+    """Service for interacting with OpenAI's Assistants API."""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        """Initialize the OpenAI service."""
+        self.api_key = api_key or OPENAI_API_KEY
+        if not self.api_key or self.api_key == "your_openai_api_key_here":
+            LOG.error("OpenAI API key is not configured or is a placeholder.")
+            raise ValueError("OpenAI API key is not configured.")
+
+        self.client = AsyncOpenAI(api_key=self.api_key)
+        self.assistant_id = ASSISTANT_ID
+        self.vector_store_id = VECTOR_STORE_ID
+        self.max_retries = MAX_RETRIES
+        self.poll_interval = POLL_INTERVAL
+        self.max_poll_attempts = MAX_POLL_ATTEMPTS
         
-        updateConfigDisplay(); // Update displayed config
-        reinitializeWidget(); // Reinitialize the widget
-      }}
-    }}
+        LOG.info(f"OpenAIService initialized. Assistant ID: {self.assistant_id if self.assistant_id else 'Not Set'}, Vector Store ID: {self.vector_store_id if self.vector_store_id else 'Not Set'}")
 
-    // Function to update language settings
-    function updateLanguageSettings() {{
-      const selectedLanguage = document.getElementById('languageSelect').value;
-      const forceRTL = document.getElementById('forceRTLCheckbox').checked;
+    async def check_api_key(self) -> Tuple[bool, str]:
+        """Check if the OpenAI API key is valid by making a lightweight call."""
+        try:
+            await self.client.models.list()
+            LOG.info("OpenAI API key validation successful (models.list).")
+            return True, "OpenAI API connection successful"
+        except Exception as e:
+            LOG.error(f"OpenAI API key validation failed: {type(e).__name__} - {e}")
+            return False, f"OpenAI API connection failed: {type(e).__name__}"
 
-      window.TherapistChatConfig.language = selectedLanguage;
-      window.TherapistChatConfig.forceRTL = forceRTL;
-
-      updateConfigDisplay(); // Update displayed config
-      reinitializeWidget(); // Reinitialize the widget
-    }}
-
-    // Function to update the displayed config in the pre block
-    function updateConfigDisplay() {{
-      const configDisplay = document.getElementById('configDisplay');
-      if (configDisplay) {{
-        configDisplay.textContent = JSON.stringify(window.TherapistChatConfig, null, 2);
-      }}
-    }}
-
-    // Function to reinitialize the widget
-    function reinitializeWidget() {{
-      if (window.TherapistChat && window.TherapistChat.init) {{
-        const existingWidget = document.getElementById('therapist-chat-widget-container');
-        if (existingWidget) {{
-          existingWidget.remove();
-        }}
-        window.TherapistChat.init(window.TherapistChatConfig);
-      }} else {{
-        console.error('TherapistChat object not found or init method not available for reinitialization');
-      }}
-    }}
-
-    // Mock responses for different markdown examples
-    const mockResponses = {{
-      'text-formatting': 
-`Here are some text formatting examples:
-
-**Bold text** for emphasis
-*Italic text* for subtle emphasis
-***Bold and italic*** for strong emphasis
-~~Strikethrough~~ for indicating removed content
-
-You can also use __underscores__ for *_mixed_* formatting.`,
-
-      'lists': 
-`Here are some list examples:
-
-Unordered List:
-* Item 1
-* Item 2
-  * Nested item 2.1
-  * Nested item 2.2
-* Item 3
-
-Ordered List:
-1. First step
-2. Second step
-   1. Substep 2.1
-   2. Substep 2.2
-3. Third step
-
-Task List:
-- [x] Completed task
-- [ ] Pending task
-- [ ] Another pending task`,
-
-      'headings': 
-`# Heading Level 1
-## Heading Level 2
-### Heading Level 3
-#### Heading Level 4
-##### Heading Level 5
-###### Heading Level 6
-
-Headings help to organize content hierarchically.`,
-
-      'blockquotes': 
-`Here's how blockquotes look:
-
-> This is a single blockquote
-> It can continue across multiple lines
-
-> Blockquotes can also be nested:
-> > This is a nested blockquote
-> > > And another level of nesting
-
-Blockquotes are useful for highlighting important information or quoting someone.`,
-
-      'code': 
-`Here are code formatting examples:
-
-Inline code: \`const name = "Therapist";\`
-
-Code blocks:
-
-\`\`\`javascript
-function greet(name) {{
-  return "Hello, " + name + "!";
-}}
-
-const message = greet("Client");
-console.log(message);
-\`\`\`
-
-\`\`\`python
-def calculate_sentiment(text):
-    # Analyze sentiment
-    return "positive"
-\`\`\``,
-
-      'links': 
-`Here are examples of links:
-
-[Visit our website](https://example.com)
-
-[Learn more about therapy](https://example.com/therapy)
-
-Reference-style links make text more readable:
-[This guide][1] has more information.
-
-[1]: https://example.com/guide`,
-
-      'combined': 
-`# Relationship Communication Guide
-
-## Common Communication Patterns
-
-Good communication is **vital** for healthy relationships. Here are some patterns to recognize:
-
-1. **Active Listening**
-   * Maintain eye contact
-   * Avoid interrupting
-   * Ask clarifying questions
-
-2. **"I" Statements**
-   Instead of: "You always ignore me!"
-   Try: "I feel unheard when our conversations are cut short."
-
-> "The single biggest problem in communication is the illusion that it has taken place." - George Bernard Shaw
-
-### Communication Exercise
-
-Try this simple exercise with your partner:
-
-\`\`\`
-1. Set a timer for 5 minutes
-2. Person A speaks without interruption
-3. Person B summarizes what they heard
-4. Switch roles
-\`\`\`
-
-[Learn more about effective communication](https://example.com)
-
-Remember that *practice* makes progress!`
-    }};
-
-    // Function to simulate response from the therapist
-    function simulateResponse(exampleType) {{
-      // First open the widget if it's collapsed
-      if (window.TherapistChat) {{
-        window.TherapistChat.open();
-        
-        // Simulate sending a message after a brief delay
-        setTimeout(() => {{
-          if (document.querySelector('.therapist-chat-input')) {{
-            // Set a fake user message
-            const input = document.querySelector('.therapist-chat-input');
-            input.value = `Show me an example of ${{exampleType}} formatting`;
+    async def create_thread(self) -> Any:
+        """Create a new thread on OpenAI."""
+        LOG.info("Creating new OpenAI thread.")
+        try:
+            tool_resources = {}
+            if self.vector_store_id:
+                tool_resources = {"file_search": {"vector_store_ids": [self.vector_store_id]}}
+                LOG.info(f"Creating thread with tool_resources for vector store: {self.vector_store_id}")
             
-            // Find and click the send button
-            const sendButton = document.querySelector('.therapist-chat-send-button');
-            if (sendButton) {{
-              sendButton.click();
-              
-              // Simulate a response from the chatbot after a short delay
-              setTimeout(() => {{
-                // Mock server response
-                const mockServerResponse = {{
-                  thread_id: "demo-thread-123",
-                  response: mockResponses[exampleType] || "I don't have an example for that format."
-                }};
+            thread_params = {}
+            if tool_resources:
+                thread_params["tool_resources"] = tool_resources
+
+            thread = await self.client.beta.threads.create(**thread_params)
+            LOG.info(f"Successfully created OpenAI thread ID: {thread.id}")
+            return thread
+        except Exception as e:
+            LOG.error(f"Unexpected error creating OpenAI thread: {e}")
+            raise
+
+    async def add_message_to_thread(self, thread_id: str, content: str, role: str = "user") -> Any:
+        """Add a message to an existing OpenAI thread."""
+        LOG.info(f"Adding message to OpenAI thread {thread_id} with role '{role}'. Content: {content[:50]}...")
+        try:
+            message = await self.client.beta.threads.messages.create(
+                thread_id=thread_id,
+                role=role,
+                content=content
+            )
+            LOG.info(f"Successfully added message ID {message.id} to thread {thread_id}.")
+            return message
+        except Exception as e:
+            LOG.error(f"Unexpected error adding message to thread {thread_id}: {e}")
+            raise
+
+    async def create_run(self, thread_id: str, assistant_id: Optional[str] = None) -> Any:
+        """Create a run for a thread with the specified assistant."""
+        target_assistant_id = assistant_id or self.assistant_id
+        if not target_assistant_id:
+            LOG.error("Cannot create run: No assistant ID provided or configured.")
+            raise ValueError("Assistant ID is required to create a run.")
+        
+        LOG.info(f"Creating run for thread {thread_id} with assistant {target_assistant_id}.")
+        try:
+            run_params = {"assistant_id": target_assistant_id}
+            run = await self.client.beta.threads.runs.create(thread_id=thread_id, **run_params)
+            LOG.info(f"Successfully created run ID {run.id} for thread {thread_id} with status {run.status}.")
+            return run
+        except Exception as e:
+            LOG.error(f"Unexpected error creating run for thread {thread_id}: {e}")
+            raise
+
+    async def get_run_status(self, thread_id: str, run_id: str) -> Any:
+        """Get the status and details of a specific run."""
+        LOG.debug(f"Retrieving status for run {run_id} in thread {thread_id}.")
+        try:
+            run = await self.client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run_id)
+            LOG.debug(f"Status for run {run.id}: {run.status}")
+            return run
+        except Exception as e:
+            LOG.error(f"Unexpected error retrieving status for run {run_id}: {e}")
+            raise
+
+    async def poll_run_until_completion(self, thread_id: str, run_id: str) -> Any:
+        """Poll a run until it reaches a terminal state (completed, failed, etc.)."""
+        LOG.info(f"Polling run {run_id} in thread {thread_id} for completion...")
+        attempts = 0
+        
+        with st.status("ד״ר רוני חושב...", expanded=True) as status:
+            while attempts < self.max_poll_attempts:
+                run = await self.get_run_status(thread_id, run_id)
                 
-                // Manually call the display logic
-                const messagesArea = document.querySelector('.therapist-chat-messages-area');
-                if (messagesArea) {{
-                  // Remove loading indicator if any
-                  const loadingIndicator = document.querySelector('.therapist-chat-loading-indicator');
-                  if (loadingIndicator) loadingIndicator.remove();
-                  
-                  // Create and append the therapist message
-                  const messageEl = document.createElement('div');
-                  messageEl.className = 'therapist-chat-message assistant-message';
-                  
-                  const avatarEl = document.createElement('div');
-                  avatarEl.className = 'therapist-chat-avatar';
-                  avatarEl.style.backgroundImage = 'url({THERAPIST_AVATAR_RELATIVE})';
-                  
-                  const bubbleEl = document.createElement('div');
-                  bubbleEl.className = 'therapist-chat-message-bubble';
-                  
-                  // Use marked.js if loaded
-                  if (window.marked) {{
-                    bubbleEl.innerHTML = window.marked.parse(mockServerResponse.response);
-                  }} else {{
-                    bubbleEl.innerHTML = mockServerResponse.response.replace(/\\n/g, '<br>');
-                  }}
-                  
-                  messageEl.appendChild(avatarEl);
-                  messageEl.appendChild(bubbleEl);
-                  messagesArea.appendChild(messageEl);
-                  
-                  // Scroll to bottom
-                  messagesArea.scrollTop = messagesArea.scrollHeight;
-                  
-                  // Enable send button
-                  const sendButton = document.querySelector('.therapist-chat-send-button');
-                  if (sendButton) sendButton.disabled = false;
-                }}
-              }}, 1500);
-            }}
-          }}
-        }}, 500);
-      }}
-    }}
+                if run.status == "completed":
+                    LOG.info(f"Run {run.id} completed successfully.")
+                    status.update(label="ד״ר רוני סיים לחשוב!", state="complete", expanded=False)
+                    return run
+                elif run.status in ["failed", "cancelled", "expired", "requires_action"]:
+                    LOG.error(f"Run {run.id} ended with terminal status: {run.status}. Error: {run.last_error}")
+                    status.update(label=f"שגיאה: {run.status}", state="error")
+                    raise Exception(f"Run failed with status: {run.status}")
+                
+                status.update(label=f"ד״ר רוני חושב... ({attempts + 1}/{self.max_poll_attempts})")
+                LOG.debug(f"Run {run.id} status: {run.status}. Waiting {self.poll_interval}s before next poll.")
+                await asyncio.sleep(self.poll_interval)
+                attempts += 1
+            
+            status.update(label="פעולה ארכה יותר מדי זמן", state="error")
+            raise TimeoutError(f"Run {run_id} timed out after {self.max_poll_attempts * self.poll_interval} seconds.")
 
-    // Test API connectivity
-    function testApiConnection() {{
-      const apiBase = document.getElementById('apiBaseInput').value.trim();
-      const statusEl = document.getElementById('apiStatus');
-      statusEl.innerHTML = 'Testing connection...';
-      statusEl.style.backgroundColor = '#f8f9fa';
+    async def get_assistant_messages(self, thread_id: str, limit: int = 20) -> List[Any]:
+        """Get messages from a thread, typically used to find the assistant's response."""
+        LOG.info(f"Retrieving messages from thread {thread_id}, limit {limit}")
+        try:
+            list_params = {"thread_id": thread_id, "order": "desc", "limit": limit}
+            messages_page = await self.client.beta.threads.messages.list(**list_params)
+            LOG.info(f"Retrieved {len(messages_page.data)} messages from thread {thread_id}.")
+            return messages_page.data
+        except Exception as e:
+            LOG.error(f"Unexpected error retrieving messages from thread {thread_id}: {e}")
+            raise
 
-      // Format the URL properly
-      const apiUrl = apiBase.includes('://') ? `${{apiBase}}/healthz` : `http://${{apiBase}}/healthz`;
-      
-      // Show URL being tested in debug panel
-      if (typeof logMessage === 'function') {{
-        logMessage(`Testing API connection to: ${{apiUrl}}`);
-      }}
+    async def get_latest_assistant_response(self, thread_id: str, run_id: str) -> Optional[str]:
+        """Get the text of the latest assistant message after a run."""
+        LOG.info(f"Getting latest assistant response for thread {thread_id} after run {run_id}")
+        messages = await self.get_assistant_messages(thread_id, limit=20)
+        
+        for message in messages:
+            if message.role == "assistant":
+                if message.content and isinstance(message.content, list):
+                    text_content = []
+                    for content_block in message.content:
+                        if content_block.type == "text":
+                            text_content.append(content_block.text.value)
+                    full_response = "\n".join(text_content)
+                    LOG.info(f"Found assistant response in thread {thread_id}: {full_response[:100]}...")
+                    return full_response
+        
+        LOG.warning(f"No assistant message found for thread {thread_id} after run {run_id}.")
+        return None
 
-      fetch(apiUrl, {{
-        method: 'GET',
-        headers: {{
-          'Content-Type': 'application/json'
-        }},
-        mode: 'cors'
-      }})
-      .then(response => {{
-        if (response.ok) {{
-          return response.json().then(data => {{
-            statusEl.innerHTML = 'Connection successful! ✅<br>API Status: ' + (data.status || 'OK');
-            statusEl.style.backgroundColor = '#d4edda';
-            return;
-          }});
-        }}
-        throw new Error(`Status: ${{response.status}} ${{response.statusText}}`);
-      }})
-      .catch(error => {{
-        console.error('API connection test failed:', error);
-        statusEl.innerHTML = `Connection failed ❌<br>${{error.message}}`;
-        statusEl.style.backgroundColor = '#f8d7da';
-      }});
-    }}
+    async def process_user_message(self, thread_id: str, user_message_content: str) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+        """Process a user message and get the assistant's response."""
+        if not self.assistant_id:
+            LOG.error("Assistant ID not set. Cannot process message.")
+            raise ValueError("Assistant ID is required.")
 
-    // Document ready function to test connection on load
-    document.addEventListener('DOMContentLoaded', function() {{
-      setTimeout(testApiConnection, 1000); // Delay slightly to ensure page is fully loaded
-      
-      // Set the language selector to match the initial config
-      document.getElementById('languageSelect').value = 'he';
-    }});
-  </script>
-</body>
-</html> 
-    """
-    
-    # Embed the HTML with the script directly in the page
-    components.html(html_content, height=600, scrolling=True)
+        # 1. Add user message to the thread
+        await self.add_message_to_thread(thread_id, user_message_content, role="user")
+
+        # 2. Create a run
+        run = await self.create_run(thread_id, self.assistant_id)
+        
+        # 3. Poll for run completion
+        completed_run = await self.poll_run_until_completion(thread_id, run.id)
+        
+        # 4. Retrieve the latest assistant message
+        assistant_response = await self.get_latest_assistant_response(thread_id, completed_run.id)
+        
+        run_usage_details = completed_run.usage.model_dump() if hasattr(completed_run, 'usage') and completed_run.usage else None
+
+        if assistant_response is None:
+            LOG.warning(f"Assistant did not provide a response for thread {thread_id}, run {completed_run.id}")
+            return thread_id, "אני לא יכול לספק תשובה כרגע.", run_usage_details
+            
+        return thread_id, assistant_response, run_usage_details
+
+# Create sidebar
+st.sidebar.markdown("<h1 style='text-align: center; color: #9C3EE8;'>ד״ר רוני</h1>", unsafe_allow_html=True)
+st.sidebar.markdown("<h3 style='text-align: center; direction: rtl;'>יועץ זוגיות AI</h3>", unsafe_allow_html=True)
+st.sidebar.markdown("---")
+
+# Add a new thread button
+if st.sidebar.button("שיחה חדשה", use_container_width=True):
+    st.session_state.thread_id = None
+    st.session_state.messages = []
+    st.rerun()
+
+# Display current thread ID
+if st.session_state.thread_id:
+    st.sidebar.markdown(f"<p style='direction: rtl; font-size: 0.8em;'>מזהה שיחה נוכחית: {st.session_state.thread_id[:14]}...</p>", unsafe_allow_html=True)
 else:
-    st.error(f"Widget script not found at: {WIDGET_SCRIPT_PATH}")
+    st.sidebar.markdown("<p style='direction: rtl; font-size: 0.8em;'>שיחה חדשה תיפתח אוטומטית</p>", unsafe_allow_html=True)
 
-st.markdown("--- ")
-st.markdown("### Disclaimer")
-st.markdown("This is a demo application. Information provided should not be considered professional advice.") 
+# Instructions/Introduction in sidebar
+with st.sidebar.expander("כיצד להשתמש ביועץ זוגיות AI", expanded=False):
+    st.markdown("""
+    <div style="direction: rtl; text-align: right;">
+    <h3>איך להשתמש בד״ר רוני</h3>
+
+    <p>ד״ר רוני הוא יועץ זוגיות מבוסס AI שיכול לעזור בשאלות על תקשורת, פתרון קונפליקטים, בניית קשר בריא ועוד.
+    פשוט הקלידו את השאלה שלכם בתיבת הטקסט למטה וד״ר רוני יענה.</p>
+
+    <p><strong>דוגמאות לשאלות:</strong></p>
+    <ul style="padding-right: 20px;">
+        <li>איך לתקשר טוב יותר עם בן/בת הזוג שלי?</li>
+        <li>איך להתמודד עם ויכוחים חוזרים על אותם נושאים?</li>
+        <li>טיפים לשיפור האינטימיות בקשר</li>
+    </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("<p style='text-align: center; font-size: 0.8em;'>*הערה: ד״ר רוני הוא יועץ AI ואינו תחליף לטיפול מקצועי.*</p>", unsafe_allow_html=True)
+
+# Main app area
+st.markdown("<h1 class='title'>ד״ר רוני | יועץ זוגיות AI</h1>", unsafe_allow_html=True)
+
+# Initialize OpenAI client
+async def initialize_client():
+    """Initialize the OpenAI client and check API key validity."""
+    if st.session_state.client_initialized:
+        LOG.info("Client already initialized")
+        return True
+    
+    if not OPENAI_API_KEY:
+        st.error("OpenAI API Key is missing. Please set it in your environment variables or Streamlit secrets.")
+        return False
+    
+    try:
+        st.session_state.openai_service = OpenAIService(api_key=OPENAI_API_KEY)
+        valid, message = await st.session_state.openai_service.check_api_key()
+        if valid:
+            LOG.info("OpenAI API key validation successful.")
+            st.session_state.client_initialized = True
+            return True
+        else:
+            LOG.error(f"OpenAI API key validation failed: {message}")
+            st.error(f"Failed to initialize OpenAI client: {message}")
+            st.session_state.client_initialized = False
+            return False
+    except Exception as e:
+        LOG.error(f"Unexpected error during client initialization: {e}")
+        st.error(f"An unexpected error occurred during initialization: {e}")
+        st.session_state.client_initialized = False
+        return False
+
+# Initialize OpenAI Service
+if not st.session_state.client_initialized:
+    asyncio.run(initialize_client())
+
+# Create a new thread if needed
+async def ensure_thread():
+    if not st.session_state.thread_id and st.session_state.client_initialized:
+        try:
+            thread = await st.session_state.openai_service.create_thread()
+            st.session_state.thread_id = thread.id
+            LOG.info(f"Created new thread with ID: {thread.id}")
+            return True
+        except Exception as e:
+            LOG.error(f"Failed to create thread: {e}")
+            st.error("Failed to start a new conversation. Please try again later.")
+            return False
+    return True
+
+# Display existing chat messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"], avatar=THERAPIST_AVATAR_URL if message["role"] == "assistant" else None):
+        st.markdown(message["content"])
+
+# Process new messages
+async def process_message(user_input):
+    if not st.session_state.client_initialized:
+        await initialize_client()
+        if not st.session_state.client_initialized:
+            return
+    
+    # Create thread if needed
+    if not st.session_state.thread_id:
+        thread_created = await ensure_thread()
+        if not thread_created:
+            return
+    
+    try:
+        # Process the message
+        thread_id, response, usage = await st.session_state.openai_service.process_user_message(
+            st.session_state.thread_id, 
+            user_input
+        )
+        
+        # Add assistant response to messages and display it
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Display the assistant's response in UI
+        with st.chat_message("assistant", avatar=THERAPIST_AVATAR_URL):
+            st.markdown(response)
+        
+        if usage:
+            LOG.info(f"Message processing complete. Usage: {usage}")
+            
+    except Exception as e:
+        LOG.error(f"Error processing message: {e}")
+        st.error(f"Error communicating with OpenAI: {str(e)}")
+
+# Chat input
+if prompt := st.chat_input("שאל את ד״ר רוני..."):
+    # Display user message
+    st.chat_message("user").markdown(prompt)
+    
+    # Add to message history
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Process the message
+    asyncio.run(process_message(prompt))
